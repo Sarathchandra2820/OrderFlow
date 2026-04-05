@@ -137,8 +137,23 @@ class Agent:
 
  
     
-    
+if __name__ == "__main__":
+    env = KyleMarketEnv(base_price=100, price_std_dev=10, noise_std_dev=5, T=10)
+    obs = env.reset()
+    insider = Agent(env, 'insider')
+    market_maker = Agent(env, 'market_maker')
 
+    
+    done = False
 
-    
-    
+    while not done:
+        if env.phase == 'insider':
+            action, log_prob = insider.act(obs)
+        else:
+            action, log_prob = market_maker.act(obs)
+
+        obs, rewards, done = env.step(action)
+
+        if rewards is not None:
+            r_insider, r_mm = rewards
+            print(f"Round {env.t_}: Insider reward: {r_insider:.2f}, Market Maker reward: {r_mm:.2f}")
