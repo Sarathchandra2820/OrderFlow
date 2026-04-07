@@ -38,12 +38,12 @@ def compute_a2c_loss(log_probs, rewards, values, critic_coef=0.5):
 
 
 # ── Environment & agents ───────────────────────────────────────────────────────
-env      = KyleMarketEnv(base_price=100, price_std_dev=10, noise_std_dev=5, T=10)
+env      = KyleMarketEnv(base_price=100, price_std_dev=10, noise_std_dev=5, T=20)
 obs      = env.reset()
 insider  = Agent(env, 'insider')
 mm_agent = Agent(env, 'market_maker')
 
-num_of_epochs   = 2000
+num_of_epochs   = 3000
 num_of_episodes = 20
 log_every       = 10
 

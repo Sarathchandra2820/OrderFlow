@@ -10,7 +10,6 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import torch
 import numpy as np
 import matplotlib.pyplot as plt
-import matplotlib.gridspec as gridspec
 from matplotlib.lines import Line2D
 from scipy import stats
 
@@ -64,15 +63,15 @@ for _ in range(N_EVAL):
     done = False
     while not done:
         with torch.no_grad():
-            x, _, _ = insider.act(obs)
-        mm_obs, _, _ = env.step(x)
+            insider_trade, _, _ = insider.act(obs)
+        mm_obs, _, _ = env.step(insider_trade)
         with torch.no_grad():
             p, _, _ = mm_agent.act(mm_obs)
         obs, rewards, done = env.step(p)
         r_i, r_mm = rewards
         ep['steps'].append({
             't':          env.t_,
-            'x':          x,
+            'x':          insider_trade,
             'y':          env.y_,
             'p':          env.p_,
             'delta_p':    env.p_ - p_prev,
@@ -92,198 +91,171 @@ all_v          = np.array([ep['v']         for ep in episodes])
 all_p_final    = np.array([ep['steps'][-1]['p'] for ep in episodes])
 
 # ── Helper: OLS line ───────────────────────────────────────────────────────────
-def ols_line(x, y):
-    slope, intercept, r, _, _ = stats.linregress(x, y)
+def ols_line(x_vals, y_vals):
+    slope, intercept, r, _, _ = stats.linregress(x_vals, y_vals)
     return slope, intercept, r**2
 
 
-# ══════════════════════════════════════════════════════════════════════════════
-# Figure 1 – Price Discovery (6 representative episodes)
-# ══════════════════════════════════════════════════════════════════════════════
-# Sort episodes by |v - base_price| so we show diverse cases
-sorted_eps = sorted(episodes, key=lambda ep: abs(ep['v'] - env.base_price), reverse=True)
-show_eps   = sorted_eps[:3] + sorted_eps[N_EVAL//2 - 1: N_EVAL//2 + 2]  # high + mid mispricing
+def pick_representative_episodes(eps, k=4):
+    scored = sorted(eps, key=lambda ep: abs(ep['v'] - env.base_price))
+    if len(scored) <= k:
+        return scored
+    idx = np.linspace(0, len(scored) - 1, k).astype(int)
+    return [scored[i] for i in idx]
 
-fig1, axes = plt.subplots(3, 6, figsize=(18, 9), constrained_layout=True)
-fig1.suptitle("Figure 1 – Price Discovery Across Episodes", fontsize=14, fontweight='bold')
 
+plt.style.use('seaborn-v0_8-whitegrid')
+plt.rcParams.update({
+    'axes.spines.top': False,
+    'axes.spines.right': False,
+    'axes.titleweight': 'bold',
+    'axes.titlesize': 11,
+    'axes.labelsize': 10,
+    'legend.frameon': False,
+    'grid.alpha': 0.2,
+    'figure.dpi': 110,
+})
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Figure 1 – Representative Price Paths (streamlined)
+# ══════════════════════════════════════════════════════════════════════════════
 T = env.T
-steps_range = range(1, T + 1)
+show_eps = pick_representative_episodes(episodes, k=4)
 
-for col, ep in enumerate(show_eps):
+fig1, axes = plt.subplots(2, 2, figsize=(12, 7), sharex=True, sharey=True, constrained_layout=True)
+fig1.suptitle("Figure 1 – Representative Price Discovery", fontsize=14, fontweight='bold')
+
+for ax, ep in zip(axes.flat, show_eps):
     v = ep['v']
-    prices = [s['p'] for s in ep['steps']]
-    trades = [s['x'] for s in ep['steps']]
-    rewards = [s['r_insider'] for s in ep['steps']]
-    cum_rewards = np.cumsum(rewards)
     ts = [s['t'] for s in ep['steps']]
+    prices = [s['p'] for s in ep['steps']]
 
-    # ── Row 0: price path ──────────────────────────────────────────────────
-    ax = axes[0, col]
-    ax.axhline(v,             color=STYLE['true_val'], linestyle='--', lw=1.5, label='True value v')
-    ax.axhline(env.base_price, color=STYLE['neutral'],  linestyle=':',  lw=1.0, label='Prior μ₀')
-    ax.plot(ts, prices, 'o-', color=STYLE['price'], lw=2, ms=5, label='MM price p_t')
-    ax.fill_between(ts, env.base_price, prices, alpha=0.12, color=STYLE['price'])
-    ax.set_title(f"v = {v:.1f}  (Δ = {v - env.base_price:+.1f})", fontsize=9)
-    ax.set_ylabel("Price" if col == 0 else "")
-    ax.set_xlim(0.5, T + 0.5)
-    ax.tick_params(labelbottom=False)
-    ax.grid(True, alpha=0.3)
+    ax.axhline(v, color=STYLE['true_val'], linestyle='--', lw=1.5)
+    ax.axhline(env.base_price, color=STYLE['neutral'], linestyle=':', lw=1.1)
+    ax.plot(ts, prices, marker='o', lw=2.2, ms=4.5, color=STYLE['price'])
+    ax.fill_between(ts, env.base_price, prices, alpha=0.10, color=STYLE['price'])
 
-    # ── Row 1: insider trade size ──────────────────────────────────────────
-    ax = axes[1, col]
-    colors = [STYLE['trade'] if xi > 0 else STYLE['true_val'] for xi in trades]
-    ax.bar(ts, trades, color=colors, alpha=0.75, width=0.6)
-    ax.axhline(0, color='black', lw=0.8)
-    # theoretical beta* × mispricing at t=1
-    misprice_0 = v - env.base_price
-    ax.axhline(env.beta_star * misprice_0, color=STYLE['theory'],
-               linestyle='--', lw=1.2, label=f'β*·(v−μ₀)={env.beta_star * misprice_0:.1f}')
-    ax.set_ylabel("Trade x" if col == 0 else "")
-    ax.tick_params(labelbottom=False)
-    ax.grid(True, alpha=0.3, axis='y')
-    if col == 0:
-        ax.legend(fontsize=7)
+    ax.set_title(f"v={v:.1f} (Δ={v - env.base_price:+.1f})")
+    ax.set_xlim(1, T)
+    ax.set_xticks(range(1, T + 1, 2))
 
-    # ── Row 2: cumulative insider reward ───────────────────────────────────
-    ax = axes[2, col]
-    ax.plot(ts, cum_rewards, 's-', color=STYLE['trade'], lw=2, ms=5)
-    ax.fill_between(ts, 0, cum_rewards, alpha=0.15, color=STYLE['trade'])
-    ax.axhline(0, color='black', lw=0.8)
+for row in axes:
+    row[0].set_ylabel("Price")
+for ax in axes[-1]:
     ax.set_xlabel("Round t")
-    ax.set_ylabel("Cumul. reward" if col == 0 else "")
-    ax.grid(True, alpha=0.3)
 
-# shared legend for row 0
 handles = [
-    Line2D([0], [0], color=STYLE['true_val'], linestyle='--', lw=1.5, label='True value v'),
-    Line2D([0], [0], color=STYLE['neutral'],  linestyle=':',  lw=1.0, label='Prior μ₀=100'),
-    Line2D([0], [0], color=STYLE['price'],    lw=2,          label='MM price p_t'),
+    Line2D([0], [0], color=STYLE['price'], lw=2.2, label='MM price $p_t$'),
+    Line2D([0], [0], color=STYLE['true_val'], linestyle='--', lw=1.5, label='True value $v$'),
+    Line2D([0], [0], color=STYLE['neutral'], linestyle=':', lw=1.1, label='Prior μ₀'),
 ]
-fig1.legend(handles=handles, loc='lower center', ncol=3, fontsize=9,
-            bbox_to_anchor=(0.5, -0.01))
-
-fig1.savefig(os.path.join(MODEL_DIR, 'fig1_price_discovery.png'), dpi=150, bbox_inches='tight')
+fig1.legend(handles=handles, loc='lower center', ncol=3, bbox_to_anchor=(0.5, -0.02), fontsize=9)
+fig1.savefig(os.path.join(MODEL_DIR, 'fig1_price_discovery.png'), dpi=160, bbox_inches='tight')
 print("Saved fig1_price_discovery.png")
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# Figure 2 – Agent Strategy Scatter Plots
+# Figure 2 – Learned Strategies (denser, cleaner)
 # ══════════════════════════════════════════════════════════════════════════════
-fig2, axes = plt.subplots(1, 2, figsize=(13, 5), constrained_layout=True)
+fig2, axes = plt.subplots(1, 2, figsize=(12.5, 5), constrained_layout=True)
 fig2.suptitle("Figure 2 – Learned vs Theoretical Strategies", fontsize=14, fontweight='bold')
 
-# ── Left: Insider strategy  x vs (v - p_prev) ─────────────────────────────
+# Insider strategy: x vs mispricing
 ax = axes[0]
-ax.scatter(all_mispricing, all_x, alpha=0.25, s=18, color=STYLE['price'], label='Observations')
-
-# OLS fit
+hb = ax.hexbin(all_mispricing, all_x, gridsize=28, cmap='Blues', mincnt=1)
 slope_i, intercept_i, r2_i = ols_line(all_mispricing, all_x)
 xr = np.linspace(all_mispricing.min(), all_mispricing.max(), 200)
-ax.plot(xr, slope_i * xr + intercept_i, color=STYLE['price'], lw=2,
-        label=f'OLS fit  β={slope_i:.3f}, R²={r2_i:.2f}')
-
-# Theoretical: x = beta_star * mispricing (through origin, no intercept)
-ax.plot(xr, env.beta_star * xr, color=STYLE['theory'], lw=2, linestyle='--',
-        label=f'Theory β*={env.beta_star}  (through origin)')
-
+ax.plot(xr, slope_i * xr + intercept_i, color=STYLE['price'], lw=2.2,
+        label=f'Fit: β={slope_i:.3f}, R²={r2_i:.2f}')
+ax.plot(xr, env.beta_star * xr, color=STYLE['theory'], lw=2.0, linestyle='--',
+        label=f'Theory: β*={env.beta_star}')
 ax.axhline(0, color='black', lw=0.7)
 ax.axvline(0, color='black', lw=0.7)
-ax.set_xlabel("Mispricing  v − p_{t−1}", fontsize=11)
-ax.set_ylabel("Insider trade  x_t", fontsize=11)
-ax.set_title("Insider Strategy", fontsize=11, fontweight='bold')
+ax.set_xlabel("Mispricing $v - p_{t-1}$")
+ax.set_ylabel("Insider trade $x_t$")
+ax.set_title("Insider Strategy")
 ax.legend(fontsize=9)
-ax.grid(True, alpha=0.3)
+fig2.colorbar(hb, ax=ax, label='Count')
 
-# ── Right: MM strategy  Δp vs y (order flow) ──────────────────────────────
+# MM strategy: Δp vs order flow
 ax = axes[1]
-ax.scatter(all_y, all_delta_p, alpha=0.25, s=18, color=STYLE['true_val'], label='Observations')
-
+hb = ax.hexbin(all_y, all_delta_p, gridsize=28, cmap='Reds', mincnt=1)
 slope_m, intercept_m, r2_m = ols_line(all_y, all_delta_p)
 yr = np.linspace(all_y.min(), all_y.max(), 200)
-ax.plot(yr, slope_m * yr + intercept_m, color=STYLE['true_val'], lw=2,
-        label=f'OLS fit  λ={slope_m:.3f}, R²={r2_m:.2f}')
-
-# Theoretical: Δp = lambda_star * y (through origin)
-ax.plot(yr, env.lambda_star * yr, color=STYLE['theory'], lw=2, linestyle='--',
-        label=f'Theory λ*={env.lambda_star}  (through origin)')
-
+ax.plot(yr, slope_m * yr + intercept_m, color=STYLE['true_val'], lw=2.2,
+        label=f'Fit: λ={slope_m:.3f}, R²={r2_m:.2f}')
+ax.plot(yr, env.lambda_star * yr, color=STYLE['theory'], lw=2.0, linestyle='--',
+        label=f'Theory: λ*={env.lambda_star}')
 ax.axhline(0, color='black', lw=0.7)
 ax.axvline(0, color='black', lw=0.7)
-ax.set_xlabel("Order flow  y_t = x_t + u_t", fontsize=11)
-ax.set_ylabel("Price update  Δp_t", fontsize=11)
-ax.set_title("Market Maker Strategy", fontsize=11, fontweight='bold')
+ax.set_xlabel("Order flow $y_t = x_t + u_t$")
+ax.set_ylabel("Price update Δp_t")
+ax.set_title("Market Maker Strategy")
 ax.legend(fontsize=9)
-ax.grid(True, alpha=0.3)
+fig2.colorbar(hb, ax=ax, label='Count')
 
-fig2.savefig(os.path.join(MODEL_DIR, 'fig2_strategies.png'), dpi=150, bbox_inches='tight')
+fig2.savefig(os.path.join(MODEL_DIR, 'fig2_strategies.png'), dpi=160, bbox_inches='tight')
 print("Saved fig2_strategies.png")
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# Figure 3 – Performance Summary
+# Figure 3 – Performance Dashboard (compact)
 # ══════════════════════════════════════════════════════════════════════════════
-fig3 = plt.figure(figsize=(14, 10), constrained_layout=True)
+fig3, axes = plt.subplots(2, 2, figsize=(12, 8), constrained_layout=True)
 fig3.suptitle("Figure 3 – Performance Summary", fontsize=14, fontweight='bold')
-gs = gridspec.GridSpec(2, 2, figure=fig3)
 
-# ── Top-left: terminal price vs true value ─────────────────────────────────
-ax = fig3.add_subplot(gs[0, 0])
-ax.scatter(all_v, all_p_final, alpha=0.6, s=40, color=STYLE['price'], zorder=3)
+# Top-left: terminal price vs true value
+ax = axes[0, 0]
+ax.scatter(all_v, all_p_final, alpha=0.65, s=34, color=STYLE['price'])
 lims = [min(all_v.min(), all_p_final.min()) - 2, max(all_v.max(), all_p_final.max()) + 2]
-ax.plot(lims, lims, 'k--', lw=1.2, label='Perfect pricing (p=v)')
-ax.set_xlim(lims); ax.set_ylim(lims)
-ax.set_xlabel("True value  v", fontsize=10)
-ax.set_ylabel("Terminal MM price  p_T", fontsize=10)
-ax.set_title("Terminal Price vs True Value", fontsize=11, fontweight='bold')
-rmse = np.sqrt(np.mean((all_p_final - all_v)**2))
-ax.text(0.05, 0.92, f'RMSE = {rmse:.2f}', transform=ax.transAxes, fontsize=9,
-        bbox=dict(boxstyle='round', facecolor='white', alpha=0.8))
-ax.legend(fontsize=9); ax.grid(True, alpha=0.3)
+ax.plot(lims, lims, 'k--', lw=1.2)
+ax.set_xlim(lims)
+ax.set_ylim(lims)
+ax.set_xlabel("True value $v$")
+ax.set_ylabel("Terminal price $p_T$")
+ax.set_title("Terminal Price Accuracy")
+rmse = np.sqrt(np.mean((all_p_final - all_v) ** 2))
+ax.text(0.04, 0.93, f'RMSE={rmse:.2f}', transform=ax.transAxes,
+        bbox=dict(boxstyle='round', facecolor='white', alpha=0.85), fontsize=9)
 
-# ── Top-right: per-round reward distribution (box plot) ───────────────────
-ax = fig3.add_subplot(gs[0, 1])
-rewards_by_t = [
-    [ep['steps'][t]['r_insider'] for ep in episodes if len(ep['steps']) > t]
-    for t in range(T)
-]
-bp = ax.boxplot(rewards_by_t, positions=range(1, T + 1), patch_artist=True,
-                medianprops=dict(color='black', lw=2))
+# Top-right: terminal mispricing histogram
+ax = axes[0, 1]
+terminal_misprice = all_v - all_p_final
+ax.hist(terminal_misprice, bins=16, color=STYLE['true_val'], alpha=0.75, edgecolor='white')
+ax.axvline(0, color='black', lw=1.2, linestyle='--')
+ax.axvline(terminal_misprice.mean(), color=STYLE['theory'], lw=2.0)
+ax.set_xlabel("Residual $v - p_T$")
+ax.set_ylabel("Count")
+ax.set_title("Terminal Mispricing")
+
+# Bottom-left: per-round reward distribution
+ax = axes[1, 0]
+rewards_by_t = [[ep['steps'][t]['r_insider'] for ep in episodes if len(ep['steps']) > t] for t in range(T)]
+bp = ax.boxplot(rewards_by_t, positions=range(1, T + 1), widths=0.65, patch_artist=True,
+                medianprops=dict(color='black', lw=1.8), showfliers=False)
 for patch in bp['boxes']:
     patch.set_facecolor(STYLE['price'])
-    patch.set_alpha(0.5)
-ax.axhline(0, color='black', lw=0.8, linestyle='--')
-ax.set_xlabel("Round t", fontsize=10)
-ax.set_ylabel("Insider reward  r_t", fontsize=10)
-ax.set_title("Per-Round Insider Reward Distribution", fontsize=11, fontweight='bold')
-ax.grid(True, alpha=0.3, axis='y')
+    patch.set_alpha(0.45)
+ax.axhline(0, color='black', lw=1.0, linestyle='--')
+ax.set_xlabel("Round t")
+ax.set_ylabel("Reward $r_t$")
+ax.set_title("Per-Round Insider Reward")
 
-# ── Bottom-left: terminal mispricing histogram ─────────────────────────────
-ax = fig3.add_subplot(gs[1, 0])
-terminal_misprice = all_v - all_p_final
-ax.hist(terminal_misprice, bins=20, color=STYLE['true_val'], alpha=0.7, edgecolor='white')
-ax.axvline(0,                         color='black',        lw=1.5, linestyle='--', label='Zero residual')
-ax.axvline(terminal_misprice.mean(),  color=STYLE['theory'], lw=2,   linestyle='-',
-           label=f'Mean = {terminal_misprice.mean():.2f}')
-ax.set_xlabel("Residual mispricing  v − p_T", fontsize=10)
-ax.set_ylabel("Count", fontsize=10)
-ax.set_title("Terminal Mispricing  (v − p_T)", fontsize=11, fontweight='bold')
-ax.legend(fontsize=9); ax.grid(True, alpha=0.3, axis='y')
+# Bottom-right: total reward per episode (sorted)
+ax = axes[1, 1]
+ep_total_rewards = np.array([sum(s['r_insider'] for s in ep['steps']) for ep in episodes])
+sorted_rewards = np.sort(ep_total_rewards)
+ax.plot(np.arange(1, len(sorted_rewards) + 1), sorted_rewards, color=STYLE['trade'], lw=2)
+ax.fill_between(np.arange(1, len(sorted_rewards) + 1), 0, sorted_rewards,
+                color=STYLE['trade'], alpha=0.12)
+ax.axhline(sorted_rewards.mean(), color='black', lw=1.2, linestyle='--')
+ax.axhline(0, color='black', lw=1.0)
+ax.set_xlabel("Episode rank (by profit)")
+ax.set_ylabel("Total insider profit")
+ax.set_title("Episode Profit Distribution")
 
-# ── Bottom-right: cumulative reward per episode ────────────────────────────
-ax = fig3.add_subplot(gs[1, 1])
-ep_total_rewards = [sum(s['r_insider'] for s in ep['steps']) for ep in episodes]
-colors_ep = [STYLE['trade'] if r > 0 else STYLE['true_val'] for r in ep_total_rewards]
-ax.bar(range(1, N_EVAL + 1), ep_total_rewards, color=colors_ep, alpha=0.75)
-ax.axhline(np.mean(ep_total_rewards), color='black', lw=1.5, linestyle='--',
-           label=f'Mean = {np.mean(ep_total_rewards):.1f}')
-ax.axhline(0, color='black', lw=0.8)
-ax.set_xlabel("Episode", fontsize=10)
-ax.set_ylabel("Total insider profit", fontsize=10)
-ax.set_title("Total Insider Profit per Episode", fontsize=11, fontweight='bold')
-ax.legend(fontsize=9); ax.grid(True, alpha=0.3, axis='y')
-
-fig3.savefig(os.path.join(MODEL_DIR, 'fig3_performance.png'), dpi=150, bbox_inches='tight')
+fig3.savefig(os.path.join(MODEL_DIR, 'fig3_performance.png'), dpi=160, bbox_inches='tight')
 print("Saved fig3_performance.png")
 
 
